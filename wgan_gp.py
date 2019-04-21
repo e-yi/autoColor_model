@@ -1,4 +1,3 @@
-
 # Large amount of credit goes to:
 # https://github.com/keras-team/keras-contrib/blob/master/examples/improved_wgan.py
 # which I've used as a reference for this implementation
@@ -19,23 +18,35 @@ import keras.backend as K
 
 import matplotlib.pyplot as plt
 
-import sys
-
 import numpy as np
+
+
+def customLoss(y_true, y_pred):
+    # y_true = K.print_tensor(y_true, message='y_true = ')
+    # y_pred = K.print_tensor(y_pred, message='y_pred = ')
+    # y_true_f = K.flatten(y_true)
+    # y_pred_f = K.flatten(y_pred)
+    mask = 1 - K.cast(K.equal(y_true, 0), K.floatx())
+    return K.mean(K.square(y_pred - y_true) * mask, axis=-1)
+
 
 class RandomWeightedAverage(_Merge):
     """Provides a (random) weighted average between real and generated image samples"""
+
     def _merge_function(self, inputs):
         alpha = K.random_uniform((32, 1, 1, 1))
         return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
-class WGANGP():
+
+class WGANGP:
     def __init__(self):
-        self.img_rows = 28
-        self.img_cols = 28
-        self.channels = 1
+        self.X_val = None
+
+        self.img_rows = 1
+        self.img_cols = 5
+        self.channels = 3
         self.img_shape = (self.img_rows, self.img_cols, self.channels)
-        self.latent_dim = 100
+        # self.latent_dim = 100
 
         # Following parameter and optimizer set as recommended in paper
         self.n_critic = 5
@@ -45,10 +56,10 @@ class WGANGP():
         self.generator = self.build_generator()
         self.critic = self.build_critic()
 
-        #-------------------------------
+        # -------------------------------
         # Construct Computational Graph
         #       for the Critic
-        #-------------------------------
+        # -------------------------------
 
         # Freeze generator's layers while training critic
         self.generator.trainable = False
@@ -56,10 +67,10 @@ class WGANGP():
         # Image input (real sample)
         real_img = Input(shape=self.img_shape)
 
-        # Noise input
-        z_disc = Input(shape=(self.latent_dim,))
+        # condition input
+        c_img = Input(shape=self.img_shape)
         # Generate image based of noise (fake sample)
-        fake_img = self.generator(z_disc)
+        fake_img = self.generator(c_img)
 
         # Discriminator determines validity of the real and fake images
         fake = self.critic(fake_img)
@@ -73,35 +84,37 @@ class WGANGP():
         # Use Python partial to provide loss function with additional
         # 'averaged_samples' argument
         partial_gp_loss = partial(self.gradient_penalty_loss,
-                          averaged_samples=interpolated_img)
-        partial_gp_loss.__name__ = 'gradient_penalty' # Keras requires function names
+                                  averaged_samples=interpolated_img)
+        partial_gp_loss.__name__ = 'gradient_penalty'  # Keras requires function names
 
-        self.critic_model = Model(inputs=[real_img, z_disc],
-                            outputs=[valid, fake, validity_interpolated])
+        self.critic_model = Model(inputs=[real_img, c_img],
+                                  outputs=[valid, fake, validity_interpolated])
         self.critic_model.compile(loss=[self.wasserstein_loss,
-                                              self.wasserstein_loss,
-                                              partial_gp_loss],
-                                        optimizer=optimizer,
-                                        loss_weights=[1, 1, 10])
-        #-------------------------------
+                                        self.wasserstein_loss,
+                                        partial_gp_loss],
+                                  optimizer=optimizer,
+                                  loss_weights=[1, 1, 10])
+        # -------------------------------
         # Construct Computational Graph
         #         for Generator
-        #-------------------------------
+        # -------------------------------
 
         # For the generator we freeze the critic's layers
         self.critic.trainable = False
         self.generator.trainable = True
 
         # Sampled noise for input to generator
-        z_gen = Input(shape=(100,))
+        z_gen = Input(shape=self.img_shape)
         # Generate images based of noise
         img = self.generator(z_gen)
         # Discriminator determines validity
         valid = self.critic(img)
         # Defines generator model
-        self.generator_model = Model(z_gen, valid)
-        self.generator_model.compile(loss=self.wasserstein_loss, optimizer=optimizer)
-
+        self.generator_model = Model(inputs=z_gen,
+                                     outputs=[valid, img])
+        self.generator_model.compile(loss=[self.wasserstein_loss, customLoss],
+                                     optimizer=optimizer,
+                                     loss_weights=[1, 1])
 
     def gradient_penalty_loss(self, y_true, y_pred, averaged_samples):
         """
@@ -120,7 +133,6 @@ class WGANGP():
         # return the mean as loss over all the batch samples
         return K.mean(gradient_penalty)
 
-
     def wasserstein_loss(self, y_true, y_pred):
         return K.mean(y_true * y_pred)
 
@@ -128,48 +140,67 @@ class WGANGP():
 
         model = Sequential()
 
-        model.add(Dense(128 * 7 * 7, activation="relu", input_dim=self.latent_dim))
-        model.add(Reshape((7, 7, 128)))
-        model.add(UpSampling2D())
-        model.add(Conv2D(128, kernel_size=4, padding="same"))
+        model.add(Flatten(input_shape=self.img_shape))
+        model.add(Dense(32 * 5 * 5, activation="relu"))
+        model.add(Reshape((5, 5, 32)))
+        # model.add(UpSampling2D())
+        model.add(Conv2D(32, kernel_size=3, padding="same"))
         model.add(BatchNormalization(momentum=0.8))
         model.add(Activation("relu"))
-        model.add(UpSampling2D())
-        model.add(Conv2D(64, kernel_size=4, padding="same"))
+        # model.add(UpSampling2D())
+        model.add(Conv2D(16, kernel_size=3, padding="same"))
+        model.add(Dropout(0.25))
         model.add(BatchNormalization(momentum=0.8))
         model.add(Activation("relu"))
-        model.add(Conv2D(self.channels, kernel_size=4, padding="same"))
+        model.add(Conv2D(self.channels, kernel_size=3, padding="same"))
+        model.add(Dropout(0.25))
+        model.add(BatchNormalization(momentum=0.8))
+        model.add(Activation("relu"))
+        model.add(Conv2D(self.channels, kernel_size=(5, 1), padding="valid"))
         model.add(Activation("tanh"))
 
         model.summary()
 
-        noise = Input(shape=(self.latent_dim,))
-        img = model(noise)
+        condition = Input(shape=self.img_shape)
+        img = model(condition)
 
-        return Model(noise, img)
+        return Model(condition, img)
 
     def build_critic(self):
 
         model = Sequential()
 
-        model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
+        model.add(Conv2D(16, kernel_size=(1, 3), padding='same', input_shape=self.img_shape))
         model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
-        model.add(ZeroPadding2D(padding=((0,1),(0,1))))
+        model.add((Dropout(0.25)))
+        model.add(Conv2D(32, (1, 3), padding='valid'))
         model.add(BatchNormalization(momentum=0.8))
         model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
+        model.add((Dropout(0.25)))
+        model.add(Conv2D(32, (1, 3), padding='valid'))
         model.add(BatchNormalization(momentum=0.8))
         model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
-        model.add(Conv2D(128, kernel_size=3, strides=1, padding="same"))
-        model.add(BatchNormalization(momentum=0.8))
-        model.add(LeakyReLU(alpha=0.2))
-        model.add(Dropout(0.25))
+        model.add((Dropout(0.25)))
         model.add(Flatten())
         model.add(Dense(1))
+        # model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
+        # model.add(LeakyReLU(alpha=0.2))
+        # model.add(Dropout(0.25))
+        # model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
+        # model.add(ZeroPadding2D(padding=((0, 1), (0, 1))))
+        # model.add(BatchNormalization(momentum=0.8))
+        # model.add(LeakyReLU(alpha=0.2))
+        # model.add(Dropout(0.25))
+        # model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
+        # model.add(BatchNormalization(momentum=0.8))
+        # model.add(LeakyReLU(alpha=0.2))
+        # model.add(Dropout(0.25))
+        # model.add(Conv2D(128, kernel_size=3, strides=1, padding="same"))
+        # model.add(BatchNormalization(momentum=0.8))
+        # model.add(LeakyReLU(alpha=0.2))
+        # model.add(Dropout(0.25))
+        # model.add(Flatten())
+        # model.add(Dense(1))
 
         model.summary()
 
@@ -180,21 +211,40 @@ class WGANGP():
 
     def train(self, epochs, batch_size, sample_interval=50):
 
-        # Load the dataset
-        (X_train, _), (_, _) = mnist.load_data()
+        # # Load the dataset
+        # (X_train, _), (_, _) = mnist.load_data()
+        #
+        # # Rescale -1 to 1
+        # X_train = (X_train.astype(np.float32) - 127.5) / 127.5
+        # X_train = np.expand_dims(X_train, axis=3)
 
-        # Rescale -1 to 1
-        X_train = (X_train.astype(np.float32) - 127.5) / 127.5
-        X_train = np.expand_dims(X_train, axis=3)
+        a = np.loadtxt('datasets/mturkData.csv', delimiter=',')
+        b = a.reshape((-1, 3, 5))
+        c = b.transpose((0, 2, 1))
+        X_train = np.expand_dims(c, 1)
+        del a, b, c
+
+        X_train = X_train * 2 - 1  # [-1,1]
+        np.random.shuffle(X_train)
+        sp = X_train.shape[0] * 8 // 10
+        X_train, self.X_val = X_train[:sp], X_train[sp:]
+
+        def getRandomMaskedColor(colors):
+            assert colors.shape[1:] == self.img_shape
+            colors = np.copy(colors)
+            for i, color in enumerate(colors):
+                rm_choice = np.random.choice(5, 5, p=[0.1, 0.2, 0.3, 0.3, 0.1])  # 可能有0到5个颜色被删除
+                color[0, rm_choice] = 0
+            return colors
 
         # Adversarial ground truths
         valid = -np.ones((batch_size, 1))
-        fake =  np.ones((batch_size, 1))
-        dummy = np.zeros((batch_size, 1)) # Dummy gt for gradient penalty
+        fake = np.ones((batch_size, 1))
+        dummy = np.zeros((batch_size, 1))  # Dummy gt for gradient penalty
+        # fake_img = np.zeros((batch_size, *self.img_shape))
         for epoch in range(epochs):
 
             for _ in range(self.n_critic):
-
                 # ---------------------
                 #  Train Discriminator
                 # ---------------------
@@ -203,43 +253,52 @@ class WGANGP():
                 idx = np.random.randint(0, X_train.shape[0], batch_size)
                 imgs = X_train[idx]
                 # Sample generator input
-                noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+                # noise = np.random.normal(0, 1, (batch_size, self.latent_dim))
+                condition = getRandomMaskedColor(imgs)
                 # Train the critic
-                d_loss = self.critic_model.train_on_batch([imgs, noise],
-                                                                [valid, fake, dummy])
+                d_loss = self.critic_model.train_on_batch([imgs, condition],
+                                                          [valid, fake, dummy])
 
             # ---------------------
             #  Train Generator
             # ---------------------
 
-            g_loss = self.generator_model.train_on_batch(noise, valid)
+            _, g_loss, c_loss = self.generator_model.train_on_batch(condition,  # valid)
+                                                                    [valid, condition])
 
             # Plot the progress
-            print ("%d [D loss: %f] [G loss: %f]" % (epoch, d_loss[0], g_loss))
+            print("%d [D loss: %f] [G loss: %f, mse loss: %f]" %
+                  (epoch, d_loss[0], g_loss, c_loss))
 
             # If at save interval => save generated image samples
             if epoch % sample_interval == 0:
                 self.sample_images(epoch)
 
     def sample_images(self, epoch):
-        r, c = 5, 5
-        noise = np.random.normal(0, 1, (r * c, self.latent_dim))
-        gen_imgs = self.generator.predict(noise)
+        colorIdx = np.random.choice(self.X_val.shape[0], 4, replace=False)
+        colors = self.X_val[colorIdx]
+        colors = np.copy(colors)
+        for i, color in enumerate(colors):
+            rm = np.random.choice(5, i + 1, replace=False)
+            color[0, rm] = 0
+
+        gen_imgs = self.generator.predict(colors)
 
         # Rescale images 0 - 1
         gen_imgs = 0.5 * gen_imgs + 0.5
+        colors = 0.5 * colors + 0.5
 
+        r, c = 2, 4
         fig, axs = plt.subplots(r, c)
-        cnt = 0
-        for i in range(r):
-            for j in range(c):
-                axs[i,j].imshow(gen_imgs[cnt, :,:,0], cmap='gray')
-                axs[i,j].axis('off')
-                cnt += 1
+        for j in range(c):
+            axs[0, j].imshow(gen_imgs[j])
+            axs[1, j].imshow(colors[j])
+            axs[0, j].axis('off')
+            axs[1, j].axis('off')
         fig.savefig("images/mnist_%d.png" % epoch)
         plt.close()
 
 
 if __name__ == '__main__':
     wgan = WGANGP()
-    wgan.train(epochs=30000, batch_size=32, sample_interval=100)
+    wgan.train(epochs=3000, batch_size=32, sample_interval=100)
