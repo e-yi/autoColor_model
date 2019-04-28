@@ -21,12 +21,16 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+MASK = 0
+BATCH_SIZE = 32
+
+
 def customLoss(y_true, y_pred):
     # y_true = K.print_tensor(y_true, message='y_true = ')
     # y_pred = K.print_tensor(y_pred, message='y_pred = ')
     # y_true_f = K.flatten(y_true)
     # y_pred_f = K.flatten(y_pred)
-    mask = 1 - K.cast(K.equal(y_true, 0), K.floatx())
+    mask = 1 - K.cast(K.equal(y_true, MASK), K.floatx())
     return K.mean(K.square(y_pred - y_true) * mask, axis=-1)
 
 
@@ -34,7 +38,7 @@ class RandomWeightedAverage(_Merge):
     """Provides a (random) weighted average between real and generated image samples"""
 
     def _merge_function(self, inputs):
-        alpha = K.random_uniform((32, 1, 1, 1))
+        alpha = K.random_uniform((BATCH_SIZE, 1, 1, 1))
         return (alpha * inputs[0]) + ((1 - alpha) * inputs[1])
 
 
@@ -114,7 +118,7 @@ class WGANGP:
                                      outputs=[valid, img])
         self.generator_model.compile(loss=[self.wasserstein_loss, customLoss],
                                      optimizer=optimizer,
-                                     loss_weights=[1, 1])
+                                     loss_weights=[1, 10])
 
     def gradient_penalty_loss(self, y_true, y_pred, averaged_samples):
         """
@@ -141,7 +145,8 @@ class WGANGP:
         model = Sequential()
 
         model.add(Flatten(input_shape=self.img_shape))
-        model.add(Dense(32 * 5 * 5, activation="relu"))
+        model.add(Dense(32 * 5 * 5))
+        # model.add(Dropout(0.25))
         model.add(Reshape((5, 5, 32)))
         # model.add(UpSampling2D())
         model.add(Conv2D(32, kernel_size=3, padding="same"))
@@ -183,24 +188,6 @@ class WGANGP:
         model.add((Dropout(0.25)))
         model.add(Flatten())
         model.add(Dense(1))
-        # model.add(Conv2D(16, kernel_size=3, strides=2, input_shape=self.img_shape, padding="same"))
-        # model.add(LeakyReLU(alpha=0.2))
-        # model.add(Dropout(0.25))
-        # model.add(Conv2D(32, kernel_size=3, strides=2, padding="same"))
-        # model.add(ZeroPadding2D(padding=((0, 1), (0, 1))))
-        # model.add(BatchNormalization(momentum=0.8))
-        # model.add(LeakyReLU(alpha=0.2))
-        # model.add(Dropout(0.25))
-        # model.add(Conv2D(64, kernel_size=3, strides=2, padding="same"))
-        # model.add(BatchNormalization(momentum=0.8))
-        # model.add(LeakyReLU(alpha=0.2))
-        # model.add(Dropout(0.25))
-        # model.add(Conv2D(128, kernel_size=3, strides=1, padding="same"))
-        # model.add(BatchNormalization(momentum=0.8))
-        # model.add(LeakyReLU(alpha=0.2))
-        # model.add(Dropout(0.25))
-        # model.add(Flatten())
-        # model.add(Dense(1))
 
         model.summary()
 
@@ -234,7 +221,7 @@ class WGANGP:
             colors = np.copy(colors)
             for i, color in enumerate(colors):
                 rm_choice = np.random.choice(5, 5, p=[0.1, 0.2, 0.3, 0.3, 0.1])  # 可能有0到5个颜色被删除
-                color[0, rm_choice] = 0
+                color[0, rm_choice] = MASK
             return colors
 
         # Adversarial ground truths
@@ -242,6 +229,9 @@ class WGANGP:
         fake = np.ones((batch_size, 1))
         dummy = np.zeros((batch_size, 1))  # Dummy gt for gradient penalty
         # fake_img = np.zeros((batch_size, *self.img_shape))
+
+        print("start training")
+
         for epoch in range(epochs):
 
             for _ in range(self.n_critic):
@@ -263,7 +253,7 @@ class WGANGP:
             #  Train Generator
             # ---------------------
 
-            _, g_loss, c_loss = self.generator_model.train_on_batch(condition,  # valid)
+            _, g_loss, c_loss = self.generator_model.train_on_batch(condition,
                                                                     [valid, condition])
 
             # Plot the progress
@@ -280,7 +270,7 @@ class WGANGP:
         colors = np.copy(colors)
         for i, color in enumerate(colors):
             rm = np.random.choice(5, i + 1, replace=False)
-            color[0, rm] = 0
+            color[0, rm] = MASK
 
         gen_imgs = self.generator.predict(colors)
 
@@ -298,7 +288,10 @@ class WGANGP:
         fig.savefig("images/mnist_%d.png" % epoch)
         plt.close()
 
+    def save(self, folder='./models/', gname='generator.h5'):
+        self.generator.save(folder+gname)
 
 if __name__ == '__main__':
     wgan = WGANGP()
-    wgan.train(epochs=3000, batch_size=32, sample_interval=100)
+    wgan.train(epochs=20000, batch_size=BATCH_SIZE, sample_interval=500)
+    wgan.save()
